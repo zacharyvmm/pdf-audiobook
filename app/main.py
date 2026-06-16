@@ -353,7 +353,14 @@ async def generate(
     _save_job(job_id)
 
     import asyncio
-    asyncio.create_task(_process_job(job_id, str(pdf_path), job_dir, voice, speed))
+    import functools
+
+    # Run in thread pool to avoid blocking the event loop (Kokoro is CPU-bound)
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        None,
+        functools.partial(_process_job_sync, job_id, str(pdf_path), job_dir, voice, speed),
+    )
 
     return {"job_id": job_id}
 
@@ -379,7 +386,7 @@ async def download_file(job_id: str, filename: str):
     return FileResponse(file_path, filename=filename, media_type="audio/mpeg")
 
 
-async def _process_job(job_id: str, pdf_path: str, job_dir: Path, voice: str, speed: float):
+def _process_job_sync(job_id: str, pdf_path: str, job_dir: Path, voice: str, speed: float):
     try:
         JOBS[job_id]["status_text"] = "Extracting text from PDF..."
         chapters = extract_chapters(pdf_path)
