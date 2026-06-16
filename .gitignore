@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# App data
+outputs/
+uploads/
+
+# Spike artifacts (keep source, ignore generated)
+spikes/**/*.wav
+spikes/**/*.mp3
+spikes/**/*.pdf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
