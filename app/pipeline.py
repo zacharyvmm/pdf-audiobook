@@ -64,10 +64,35 @@ def _get_pipeline() -> KPipeline:
     return _pipeline
 
 
+def normalize_text(text: str) -> str:
+    """
+    Join broken PDF lines into flowing paragraphs.
+    Lines that don't end with sentence-ending punctuation are merged
+    with the next line. Double newlines (paragraph breaks) are preserved.
+    """
+    lines = text.split("\n")
+    result = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if result and result[-1] != "\n":
+                result.append("\n")  # paragraph break
+            continue
+        if result and result[-1] != "\n":
+            # Join with previous line if it doesn't end with sentence-ending punctuation
+            prev = result[-1].rstrip()
+            if prev and prev[-1] not in ".!?\"'»" and not stripped[0].isupper():
+                result[-1] = prev + " " + stripped
+                continue
+        result.append(stripped)
+    return "\n".join(result)
+
+
 def generate_audio(text: str, voice: str = "af_heart", speed: float = 1.0) -> np.ndarray | None:
     """Run Kokoro TTS on text, return concatenated audio as numpy array (24kHz float32)."""
     pipeline = _get_pipeline()
-    chunks = list(pipeline(text, voice=voice, speed=speed))
+    text = normalize_text(text)
+    chunks = list(pipeline(text, voice=voice, speed=speed, split_pattern=r"\n{2,}"))
     if not chunks:
         return None
     return np.concatenate([audio for _, _, audio in chunks])
@@ -86,9 +111,9 @@ def generate_audio_streaming(
     """
     pipeline = _get_pipeline()
     audio_chunks = []
-    # Estimate total chunks from text length (~50 chars per chunk typical)
+    text = normalize_text(text)
     est_total = max(1, len(text) // 50)
-    for i, (gs, ps, audio) in enumerate(pipeline(text, voice=voice, speed=speed)):
+    for i, (gs, ps, audio) in enumerate(pipeline(text, voice=voice, speed=speed, split_pattern=r"\n{2,}")):
         audio_chunks.append(audio)
         if progress_callback:
             progress_callback(i + 1, est_total)
