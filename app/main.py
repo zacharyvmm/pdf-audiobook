@@ -298,6 +298,7 @@ function updateUI(data) {
     }
     knownChapterCount = data.chapters.length;
   }
+}
 
 function onDone(data) {
   submitBtn.classList.remove('loading');

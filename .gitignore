@@ -8,10 +8,12 @@ __pycache__/
 outputs/
 uploads/
 
+# PDFs (user uploads, test files)
+*.pdf
+
 # Spike artifacts (keep source, ignore generated)
 spikes/**/*.wav
 spikes/**/*.mp3
-spikes/**/*.pdf
 
 # OS
 .DS_Store
