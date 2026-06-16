@@ -16,7 +16,7 @@ from kokoro import KPipeline
 
 # ── PDF extraction ──────────────────────────────────────────────
 
-def extract_chapters(pdf_path: str | Path) -> list[tuple[str, str]]:
+def extract_chapters(pdf_path: str | Path, fallback_name: str = "") -> list[tuple[str, str]]:
     """
     Extract text from a PDF, splitting by chapter headings.
     Returns list of (chapter_title, chapter_text).
@@ -48,7 +48,7 @@ def extract_chapters(pdf_path: str | Path) -> list[tuple[str, str]]:
     clean = full_text.strip()
     if not clean:
         return []
-    title = doc.metadata.get("title") or Path(pdf_path).stem.replace("_", " ").title()
+    title = doc.metadata.get("title") or fallback_name or Path(pdf_path).stem.replace("_", " ").title()
     return [(title, clean)]
 
 
@@ -71,6 +71,30 @@ def generate_audio(text: str, voice: str = "af_heart", speed: float = 1.0) -> np
     if not chunks:
         return None
     return np.concatenate([audio for _, _, audio in chunks])
+
+
+def generate_audio_streaming(
+    text: str,
+    voice: str = "af_heart",
+    speed: float = 1.0,
+    *,
+    progress_callback=None,
+) -> np.ndarray | None:
+    """
+    Like generate_audio, but calls progress_callback(chunk_num, total_estimate)
+    after each chunk. total_estimate is approximate.
+    """
+    pipeline = _get_pipeline()
+    audio_chunks = []
+    # Estimate total chunks from text length (~50 chars per chunk typical)
+    est_total = max(1, len(text) // 50)
+    for i, (gs, ps, audio) in enumerate(pipeline(text, voice=voice, speed=speed)):
+        audio_chunks.append(audio)
+        if progress_callback:
+            progress_callback(i + 1, est_total)
+    if not audio_chunks:
+        return None
+    return np.concatenate(audio_chunks)
 
 
 def audio_to_mp3_bytes(audio: np.ndarray, sample_rate: int = 24000) -> bytes:

@@ -12,7 +12,7 @@ from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .pipeline import extract_chapters, generate_audio, audio_to_mp3_bytes
+from .pipeline import extract_chapters, generate_audio, generate_audio_streaming, audio_to_mp3_bytes
 
 app = FastAPI(title="PDF Audiobook")
 
@@ -347,6 +347,7 @@ async def generate(
         return JSONResponse({"detail": "Please upload a PDF file."}, status_code=400)
 
     job_id = uuid.uuid4().hex[:12]
+    original_name = file.filename
     pdf_path = UPLOAD_DIR / f"{job_id}.pdf"
     job_dir = OUTPUT_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -371,7 +372,7 @@ async def generate(
     loop = asyncio.get_running_loop()
     loop.run_in_executor(
         None,
-        functools.partial(_process_job_sync, job_id, str(pdf_path), job_dir, voice, speed),
+        functools.partial(_process_job_sync, job_id, str(pdf_path), job_dir, voice, speed, original_name),
     )
 
     return {"job_id": job_id}
@@ -398,10 +399,10 @@ async def download_file(job_id: str, filename: str):
     return FileResponse(file_path, filename=filename, media_type="audio/mpeg")
 
 
-def _process_job_sync(job_id: str, pdf_path: str, job_dir: Path, voice: str, speed: float):
+def _process_job_sync(job_id: str, pdf_path: str, job_dir: Path, voice: str, speed: float, original_name: str = ""):
     try:
         JOBS[job_id]["status_text"] = "Extracting text from PDF..."
-        chapters = extract_chapters(pdf_path)
+        chapters = extract_chapters(pdf_path, fallback_name=original_name)
         total = len(chapters)
         total_words = sum(len(t.split()) for _, t in chapters)
         JOBS[job_id]["total_chapters"] = total
@@ -416,7 +417,23 @@ def _process_job_sync(job_id: str, pdf_path: str, job_dir: Path, voice: str, spe
             JOBS[job_id]["current_chapter"] = i + 1
             _save_job(job_id)
 
-            audio = generate_audio(text, voice=voice, speed=speed)
+            # Calculate progress range for this chapter
+            chapter_pct_start = 5 + int(90 * (i / max(total, 1)))
+            chapter_pct_end = 5 + int(90 * ((i + 1) / max(total, 1)))
+
+            def on_chunk(chunk_num: int, est_total: int):
+                # Interpolate progress within this chapter
+                frac = min(chunk_num / max(est_total, 1), 1.0)
+                pct = int(chapter_pct_start + frac * (chapter_pct_end - chapter_pct_start))
+                JOBS[job_id]["progress"] = pct
+                JOBS[job_id]["status_text"] = (
+                    f"Chapter {i+1}/{total}: {title[:50]}... "
+                    f"(chunk {chunk_num}/{est_total})"
+                )
+
+            audio = generate_audio_streaming(
+                text, voice=voice, speed=speed, progress_callback=on_chunk
+            )
             if audio is None:
                 continue
 
