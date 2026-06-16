@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import uuid
 import shutil
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile, Form, Request
@@ -15,15 +16,48 @@ from .pipeline import extract_chapters, generate_audio, audio_to_mp3_bytes
 
 app = FastAPI(title="PDF Audiobook")
 
-# ── In-memory job store ─────────────────────────────────────────
+# ── File-backed job store (survives restarts) ────────────────────
 
-JOBS: dict[str, dict] = {}  # job_id → {status, chapters: [{title, mp3_path}]}
+JOBS: dict[str, dict] = {}  # job_id → {status, chapters, ...}
 
 BASE_DIR = Path(__file__).parent.parent
 OUTPUT_DIR = BASE_DIR / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+
+def _job_path(job_id: str) -> Path:
+    return OUTPUT_DIR / job_id / "job.json"
+
+
+def _save_job(job_id: str):
+    (_job_path(job_id).parent).mkdir(parents=True, exist_ok=True)
+    _job_path(job_id).write_text(json.dumps(JOBS[job_id], default=str))
+
+
+def _load_job(job_id: str) -> dict | None:
+    p = _job_path(job_id)
+    if not p.is_file():
+        return None
+    return json.loads(p.read_text())
+
+
+def _recover_jobs():
+    """On startup, reload any existing job state from disk."""
+    for job_dir in OUTPUT_DIR.iterdir():
+        if not job_dir.is_dir():
+            continue
+        jf = job_dir / "job.json"
+        if jf.is_file():
+            try:
+                job = json.loads(jf.read_text())
+                JOBS[job_dir.name] = job
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+
+_recover_jobs()  # run at import time
 
 # ── HTML frontend ────────────────────────────────────────────────
 
@@ -316,6 +350,7 @@ async def generate(
         "total_chapters": 0,
         "error": None,
     }
+    _save_job(job_id)
 
     import asyncio
     asyncio.create_task(_process_job(job_id, str(pdf_path), job_dir, voice, speed))
@@ -327,7 +362,12 @@ async def generate(
 async def job_status(job_id: str):
     job = JOBS.get(job_id)
     if not job:
-        return JSONResponse({"detail": "Job not found"}, status_code=404)
+        # Try disk (survived a restart)
+        job = _load_job(job_id)
+        if job:
+            JOBS[job_id] = job  # restore to memory
+        else:
+            return JSONResponse({"detail": "Job not found"}, status_code=404)
     return job
 
 
@@ -352,6 +392,7 @@ async def _process_job(job_id: str, pdf_path: str, job_dir: Path, voice: str, sp
         for i, (title, text) in enumerate(chapters):
             JOBS[job_id]["status_text"] = f"Generating audio for: {title[:60]}..."
             JOBS[job_id]["progress"] = 5 + int(90 * (i / max(total, 1)))
+            _save_job(job_id)
 
             audio = generate_audio(text, voice=voice, speed=speed)
             if audio is None:
@@ -369,15 +410,18 @@ async def _process_job(job_id: str, pdf_path: str, job_dir: Path, voice: str, sp
                 "title": title,
                 "url": f"/api/download/{job_id}/{filename}",
             })
+            _save_job(job_id)
 
         JOBS[job_id]["status"] = "done"
         JOBS[job_id]["progress"] = 100
         JOBS[job_id]["status_text"] = f"Done! {total} chapter(s) generated."
+        _save_job(job_id)
 
     except Exception as e:
         JOBS[job_id]["status"] = "error"
         JOBS[job_id]["error"] = str(e)
         JOBS[job_id]["status_text"] = f"Error: {e}"
+        _save_job(job_id)
 
     finally:
         # Clean up uploaded PDF
