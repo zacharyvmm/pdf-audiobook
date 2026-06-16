@@ -256,6 +256,23 @@ function updateUI(data) {
   else if (data.status === 'generating' || data.chapters?.length > 0) statusIcon.textContent = '🔊';
   else statusIcon.textContent = '⏳';
 
+  // Chapter counter with ETA
+  let counterText = '';
+  if (data.total_chapters) {
+    counterText = data.chapters.length + ' / ' + data.total_chapters;
+  }
+  if (data.total_words && data.progress > 0 && data.progress < 100) {
+    // ~25 words/sec processing on this CPU (2.4x realtime at ~150 wpm)
+    const estTotalSec = data.total_words / 25;
+    const estRemaining = Math.max(0, estTotalSec * (1 - data.progress / 100));
+    if (estRemaining > 60) {
+      counterText += (counterText ? ' · ~' : '~') + Math.round(estRemaining / 60) + ' min left';
+    } else if (estRemaining > 5) {
+      counterText += (counterText ? ' · ~' : '~') + Math.round(estRemaining) + 's left';
+    }
+  }
+  chapterCount.textContent = counterText;
+
   // New chapters appeared — add cards
   if (data.chapters && data.chapters.length > knownChapterCount) {
     for (let i = knownChapterCount; i < data.chapters.length; i++) {
@@ -274,11 +291,6 @@ function updateUI(data) {
     }
     knownChapterCount = data.chapters.length;
   }
-
-  if (data.total_chapters) {
-    chapterCount.textContent = data.chapters.length + ' / ' + data.total_chapters;
-  }
-}
 
 function onDone(data) {
   submitBtn.classList.remove('loading');
@@ -391,14 +403,17 @@ def _process_job_sync(job_id: str, pdf_path: str, job_dir: Path, voice: str, spe
         JOBS[job_id]["status_text"] = "Extracting text from PDF..."
         chapters = extract_chapters(pdf_path)
         total = len(chapters)
+        total_words = sum(len(t.split()) for _, t in chapters)
         JOBS[job_id]["total_chapters"] = total
+        JOBS[job_id]["total_words"] = total_words
         JOBS[job_id]["progress"] = 5
         JOBS[job_id]["status"] = "generating"
-        JOBS[job_id]["status_text"] = f"Found {total} chapter(s). Generating audio..."
+        JOBS[job_id]["status_text"] = f"Found {total} chapter(s), ~{total_words} words. Generating audio..."
 
         for i, (title, text) in enumerate(chapters):
             JOBS[job_id]["status_text"] = f"Generating audio for: {title[:60]}..."
             JOBS[job_id]["progress"] = 5 + int(90 * (i / max(total, 1)))
+            JOBS[job_id]["current_chapter"] = i + 1
             _save_job(job_id)
 
             audio = generate_audio(text, voice=voice, speed=speed)
