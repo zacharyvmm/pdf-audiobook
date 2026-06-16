@@ -134,7 +134,7 @@ const statusMsg = document.getElementById('status-msg');
 const chapterCount = document.getElementById('chapter-count');
 const chaptersDiv = document.getElementById('chapters');
 
-let pollTimer = null, knownChapterCount = 0;
+let pollTimer = null, knownChapterCount = 0, pollFailures = 0;
 
 // ── Drag & drop styling ──
 uploadBox.addEventListener('dragover', e => { e.preventDefault(); uploadBox.classList.add('dragover'); });
@@ -160,23 +160,39 @@ form.addEventListener('submit', async (e) => {
   chaptersDiv.innerHTML = '';
   knownChapterCount = 0;
 
-  const res = await fetch('/api/generate', { method: 'POST', body: formData });
-  const data = await res.json();
+  let res, data;
+  try {
+    res = await fetch('/api/generate', { method: 'POST', body: formData });
+    data = await res.json();
+  } catch (err) {
+    showError('Cannot reach server. Is it running? (Error: ' + err.message + ')');
+    return;
+  }
 
   if (!res.ok) {
-    showError(data.detail || 'Upload failed');
+    showError(data.detail || 'Upload failed (HTTP ' + res.status + ')');
     return;
   }
 
   pollStatus(data.job_id);
 });
 
+
 function pollStatus(jobId) {
   clearInterval(pollTimer);
+  pollFailures = 0;
   pollTimer = setInterval(async () => {
     try {
       const res = await fetch('/api/status/' + jobId);
-      if (!res.ok) throw new Error('Status check failed');
+      if (!res.ok) {
+        pollFailures++;
+        if (pollFailures > 10) {
+          clearInterval(pollTimer);
+          showError('Server returned ' + res.status + ' repeatedly. It may have restarted — please try uploading again.');
+        }
+        return;
+      }
+      pollFailures = 0;
       const data = await res.json();
       updateUI(data);
 
@@ -188,7 +204,11 @@ function pollStatus(jobId) {
         showError(data.error);
       }
     } catch (err) {
-      // keep polling on transient failures
+      pollFailures++;
+      if (pollFailures > 10) {
+        clearInterval(pollTimer);
+        showError('Lost connection to server. Please refresh and try again.');
+      }
     }
   }, 800);
 }
