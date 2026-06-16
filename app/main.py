@@ -44,7 +44,8 @@ def _load_job(job_id: str) -> dict | None:
 
 
 def _recover_jobs():
-    """On startup, reload any existing job state from disk."""
+    """On startup, reload any existing job state from disk.
+    Stale in-progress jobs (from a crashed server) are marked as error."""
     for job_dir in OUTPUT_DIR.iterdir():
         if not job_dir.is_dir():
             continue
@@ -52,6 +53,12 @@ def _recover_jobs():
         if jf.is_file():
             try:
                 job = json.loads(jf.read_text())
+                # If the old server died mid-processing, mark as stale
+                if job.get("status") in ("extracting", "generating") and not job.get("error"):
+                    job["status"] = "error"
+                    job["error"] = "Server restarted while processing. Please re-upload your PDF."
+                    job["status_text"] = "Server restarted — job lost. Please try again."
+                    jf.write_text(json.dumps(job, default=str))
                 JOBS[job_dir.name] = job
             except (json.JSONDecodeError, KeyError):
                 pass
@@ -400,10 +407,19 @@ async def download_file(job_id: str, filename: str):
 
 
 def _process_job_sync(job_id: str, pdf_path: str, job_dir: Path, voice: str, speed: float, original_name: str = ""):
+    import sys
     try:
+        print(f"[JOB {job_id}] Starting: {original_name or pdf_path}", file=sys.stderr, flush=True)
         JOBS[job_id]["status_text"] = "Extracting text from PDF..."
         chapters = extract_chapters(pdf_path, fallback_name=original_name)
         total = len(chapters)
+        if total == 0:
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = "No text found in this PDF. It may be a scanned document (images only). Try a PDF with selectable text."
+            JOBS[job_id]["status_text"] = "No extractable text found."
+            JOBS[job_id]["progress"] = 100
+            _save_job(job_id)
+            return
         total_words = sum(len(t.split()) for _, t in chapters)
         JOBS[job_id]["total_chapters"] = total
         JOBS[job_id]["total_words"] = total_words
@@ -430,6 +446,9 @@ def _process_job_sync(job_id: str, pdf_path: str, job_dir: Path, voice: str, spe
                     f"Chapter {i+1}/{total}: {title[:50]}... "
                     f"(chunk {chunk_num}/{est_total})"
                 )
+                # Persist every 5 chunks so progress survives restarts
+                if chunk_num % 5 == 0:
+                    _save_job(job_id)
 
             audio = generate_audio_streaming(
                 text, voice=voice, speed=speed, progress_callback=on_chunk
@@ -455,12 +474,14 @@ def _process_job_sync(job_id: str, pdf_path: str, job_dir: Path, voice: str, spe
         JOBS[job_id]["progress"] = 100
         JOBS[job_id]["status_text"] = f"Done! {total} chapter(s) generated."
         _save_job(job_id)
+        print(f"[JOB {job_id}] Done: {total} chapters", file=sys.stderr, flush=True)
 
     except Exception as e:
         JOBS[job_id]["status"] = "error"
         JOBS[job_id]["error"] = str(e)
         JOBS[job_id]["status_text"] = f"Error: {e}"
         _save_job(job_id)
+        print(f"[JOB {job_id}] ERROR: {e}", file=sys.stderr, flush=True)
 
     finally:
         # Clean up uploaded PDF
